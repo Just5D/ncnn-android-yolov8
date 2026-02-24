@@ -1,0 +1,9 @@
+app/src/main/jniLibs/
+app/src/main/jni/ncnn-*/
+app/src/main/jni/opencv-*/
+.gradle/
+.idea/
+app/.cxx/
+app/build/
+build/
+local.properties
