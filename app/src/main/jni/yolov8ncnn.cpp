@@ -300,6 +300,64 @@ JNIEXPORT jboolean JNICALL Java_com_tencent_yolov8ncnn_YOLOv8Ncnn_setOutputWindo
     return JNI_TRUE;
 }
 
+// public native void nativeCapture();
+JNIEXPORT void JNICALL Java_com_tencent_yolov8ncnn_MainActivity_nativeCapture(JNIEnv* env, jobject thiz)
+{
+    __android_log_print(ANDROID_LOG_DEBUG, "MainActivity", "nativeCapture called");
+    
+    // 获取当前帧（已经是RGB格式）
+    cv::Mat frame = g_camera->get_current_frame();
+    
+    if (frame.empty()) {
+        __android_log_print(ANDROID_LOG_ERROR, "MainActivity", 
+                           "nativeCapture: frame is empty");
+        return;
+    }
+    
+    __android_log_print(ANDROID_LOG_DEBUG, "MainActivity", 
+                       "nativeCapture: got frame %dx%d channels=%d", 
+                       frame.cols, frame.rows, frame.channels());
+    
+    // 准备返回给Java的数据
+    // 注意：frame是CV_8UC3 (BGR)，我们需要转换为RGBA
+    int width = frame.cols;
+    int height = frame.rows;
+    int dataSize = width * height * 4;  // RGBA
+    
+    jbyteArray byteArray = env->NewByteArray(dataSize);
+    jbyte* byteData = env->GetByteArrayElements(byteArray, NULL);
+    
+    // 手动转换BGR到RGBA
+    const unsigned char* bgrData = frame.data;
+    unsigned char* rgbaData = (unsigned char*)byteData;
+    
+    for (int i = 0; i < width * height; i++) {
+        rgbaData[0] = bgrData[2];  // R
+        rgbaData[1] = bgrData[1];  // G
+        rgbaData[2] = bgrData[0];  // B
+        rgbaData[3] = 255;          // A
+        
+        bgrData += 3;
+        rgbaData += 4;
+    }
+    
+    env->ReleaseByteArrayElements(byteArray, byteData, 0);
+    
+    // 调用Java回调
+    jclass clazz = env->GetObjectClass(thiz);
+    jmethodID callbackMethod = env->GetMethodID(clazz, 
+                                                "onCaptureComplete", 
+                                                "([BII)V");
+    if (callbackMethod) {
+        env->CallVoidMethod(thiz, callbackMethod, byteArray, width, height);
+    }
+    
+    env->DeleteLocalRef(byteArray);
+    
+    __android_log_print(ANDROID_LOG_DEBUG, "MainActivity", 
+                       "nativeCapture: completed");
+}
+
 // public native byte[] getCurrentFrame();
 JNIEXPORT jbyteArray JNICALL Java_com_tencent_yolov8ncnn_YOLOv8Ncnn_getCurrentFrame(JNIEnv* env, jobject thiz)
 {

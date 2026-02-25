@@ -74,6 +74,17 @@ public:
 
     // 获取当前帧的RGB数据
     cv::Mat get_current_frame() const;
+    
+    // 拍照相关
+    void set_capture_requested(bool requested) { 
+        capture_requested = requested; 
+    }
+    bool is_capture_requested() const { 
+        return capture_requested; 
+    }
+    void clear_capture_requested() { 
+        capture_requested = false; 
+    }
 
 public:
     mutable int accelerometer_orientation;
@@ -87,6 +98,9 @@ private:
     // 存储最新的帧数据
     mutable cv::Mat latest_frame;
     mutable ncnn::Mutex frame_mutex;
+    
+    // 拍照标志
+    mutable bool capture_requested;
 };
 
 #endif // NDKCAMERA_H

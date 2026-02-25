@@ -429,6 +429,7 @@ NdkCameraWindow::NdkCameraWindow() : NdkCamera()
     win = 0;
 
     accelerometer_orientation = 0;
+    capture_requested = false;
 
     // sensor
     sensor_manager = ASensorManager_getInstance();
@@ -469,13 +470,8 @@ void NdkCameraWindow::set_window(ANativeWindow* _win)
 
 void NdkCameraWindow::on_image_render(cv::Mat& rgb) const
 {
-    // 保存最新的帧数据
-    {
-        ncnn::MutexLockGuard g(frame_mutex);
-        latest_frame = rgb.clone();
-        __android_log_print(ANDROID_LOG_DEBUG, "NdkCameraWindow", "on_image_render: saved frame %dx%d", 
-                           rgb.cols, rgb.rows);
-    }
+    // 不再保存帧数据 - 已在 on_image 中统一处理
+    // 这里只负责渲染逻辑
 }
 
 void NdkCameraWindow::on_image(const unsigned char* nv21, int nv21_width, int nv21_height) const
@@ -579,15 +575,20 @@ void NdkCameraWindow::on_image(const unsigned char* nv21, int nv21_width, int nv
     cv::Mat rgb(h, w, CV_8UC3);
     ncnn::yuv420sp2rgb(nv21_rotated.data, w, h, rgb.data);
 
-    // 保存帧数据（使用旋转后的正确尺寸）
+    // **关键修改：统一图像保存逻辑，深拷贝避免数据竞争**
     {
         ncnn::MutexLockGuard g(frame_mutex);
+        
+        // 使用 clone() 深拷贝确保数据完整性
         latest_frame = rgb.clone();
-        __android_log_print(ANDROID_LOG_DEBUG, "NdkCameraWindow", "on_image: saved rotated frame %dx%d", 
-                           rgb.cols, rgb.rows);
+        
+        __android_log_print(ANDROID_LOG_DEBUG, "NdkCameraWindow", 
+                           "on_image: saved frame %dx%d (channels=%d)", 
+                           latest_frame.cols, latest_frame.rows, 
+                           latest_frame.channels());
     }
     
-    // 调用渲染回调
+    // 调用渲染回调（不再重复保存）
     on_image_render(rgb);
     
     // 显示到窗口（使用旋转后的尺寸）
@@ -624,21 +625,19 @@ void NdkCameraWindow::on_image(const unsigned char* nv21, int nv21_width, int nv
 cv::Mat NdkCameraWindow::get_current_frame() const
 {
     ncnn::MutexLockGuard g(frame_mutex);
-    __android_log_print(ANDROID_LOG_DEBUG, "NdkCameraWindow", "get_current_frame: latest_frame empty=%d", 
-                       latest_frame.empty() ? 1 : 0);
     
-    if (latest_frame.empty())
-    {
-        // 返回一个默认的黑色图像
-        __android_log_print(ANDROID_LOG_DEBUG, "NdkCameraWindow", "get_current_frame: returning black frame");
-        return cv::Mat(480, 640, CV_8UC3, cv::Scalar(0, 0, 0));
+    if (latest_frame.empty()) {
+        __android_log_print(ANDROID_LOG_WARN, "NdkCameraWindow", 
+                           "get_current_frame: frame is empty");
+        return cv::Mat();
     }
     
-    // 创建一个新的Mat来确保数据完整性，避免内存访问冲突
-    cv::Mat frame_copy;
-    latest_frame.copyTo(frame_copy);
+    // **关键：使用 clone() 返回深拷贝，避免数据竞争**
+    cv::Mat frame_copy = latest_frame.clone();
     
-    __android_log_print(ANDROID_LOG_DEBUG, "NdkCameraWindow", "get_current_frame: returning copied frame %dx%d", 
+    __android_log_print(ANDROID_LOG_DEBUG, "NdkCameraWindow", 
+                       "get_current_frame: returning %dx%d (copied)", 
                        frame_copy.cols, frame_copy.rows);
+    
     return frame_copy;
 }

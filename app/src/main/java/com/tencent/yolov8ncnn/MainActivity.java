@@ -48,6 +48,8 @@ import android.support.v4.content.ContextCompat;
 
 public class MainActivity extends Activity implements SurfaceHolder.Callback
 {
+    // 添加native方法声明
+    public native void nativeCapture();
     public static final int REQUEST_CAMERA = 100;
 
     private YOLOv8Ncnn yolov8ncnn = new YOLOv8Ncnn();
@@ -88,7 +90,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback
         btnCapture.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                captureAndSaveImage();
+                // 使用新的nativeCapture方法
+                nativeCapture();
             }
         });
         buttonSwitchCamera.setOnClickListener(new View.OnClickListener() {
@@ -211,6 +214,47 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback
         setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT);
     }
 
+    /**
+     * JNI回调方法 - 处理nativeCapture的结果
+     */
+    private void onCaptureComplete(byte[] imageData, int width, int height) {
+        try {
+            Log.d("MainActivity", "onCaptureComplete: " + width + "x" + height + 
+                  " data length=" + imageData.length);
+            
+            // 从RGBA字节数组创建Bitmap
+            Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            bitmap.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(imageData));
+            
+            final Bitmap finalBitmap = bitmap;
+            
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    // 保存到相册
+                    saveBitmapToGallery(finalBitmap);
+                    
+                    Toast.makeText(MainActivity.this, 
+                                  "拍照成功: " + width + "x" + height, 
+                                  Toast.LENGTH_SHORT).show();
+                }
+            });
+            
+        } catch (Exception e) {
+            e.printStackTrace();
+            Log.e("MainActivity", "onCaptureComplete error: " + e.getMessage());
+            
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    Toast.makeText(MainActivity.this, 
+                                  "拍照失败: " + e.getMessage(), 
+                                  Toast.LENGTH_SHORT).show();
+                }
+            });
+        }
+    }
+    
     /**
      * 拍照并保存图像
      */
