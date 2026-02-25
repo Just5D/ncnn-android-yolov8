@@ -632,11 +632,25 @@ cv::Mat NdkCameraWindow::get_current_frame() const
         return cv::Mat();
     }
     
-    // **关键：使用 clone() 返回深拷贝，避免数据竞争**
+    // 深拷贝当前帧
     cv::Mat frame_copy = latest_frame.clone();
     
+    // **关键修复：转换 RGB 到 BGR**
+    // OpenCV 默认是 BGR，而 ncnn::yuv420sp2rgb 输出的是 RGB
+    // 所以需要交换 R 和 B 通道
+    for (int i = 0; i < frame_copy.rows; i++) {
+        unsigned char* row = frame_copy.ptr<unsigned char>(i);
+        for (int j = 0; j < frame_copy.cols; j++) {
+            // 交换 R(0) 和 B(2)
+            unsigned char temp = row[0];
+            row[0] = row[2];
+            row[2] = temp;
+            row += 3;
+        }
+    }
+    
     __android_log_print(ANDROID_LOG_DEBUG, "NdkCameraWindow", 
-                       "get_current_frame: returning %dx%d (copied)", 
+                       "get_current_frame: returning %dx%d (RGB->BGR converted)", 
                        frame_copy.cols, frame_copy.rows);
     
     return frame_copy;
