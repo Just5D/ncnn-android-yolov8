@@ -23,6 +23,7 @@ public class YOLOv8Ncnn
     public native boolean openCamera(int facing);
     public native boolean closeCamera();
     public native boolean setOutputWindow(Surface surface);
+    public native byte[] getCurrentFrame(); // 新增：获取当前帧数据
 
     static {
         System.loadLibrary("yolov8ncnn");

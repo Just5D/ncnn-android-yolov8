@@ -300,4 +300,52 @@ JNIEXPORT jboolean JNICALL Java_com_tencent_yolov8ncnn_YOLOv8Ncnn_setOutputWindo
     return JNI_TRUE;
 }
 
+// public native byte[] getCurrentFrame();
+JNIEXPORT jbyteArray JNICALL Java_com_tencent_yolov8ncnn_YOLOv8Ncnn_getCurrentFrame(JNIEnv* env, jobject thiz)
+{
+    __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "getCurrentFrame");
+    
+    // 获取当前帧
+    cv::Mat frame = g_camera->get_current_frame();
+    
+    __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "getCurrentFrame: frame empty=%d size=%dx%d", 
+                       frame.empty() ? 1 : 0, frame.cols, frame.rows);
+    
+    if (frame.empty())
+    {
+        __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "getCurrentFrame: empty frame");
+        return NULL;
+    }
+    
+    // 确保返回正确的BGR格式数据
+    int frame_size = frame.rows * frame.cols * 3; // 3 channels
+    
+    __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "getCurrentFrame: frame_size=%d rows=%d cols=%d", 
+                       frame_size, frame.rows, frame.cols);
+    
+    // 创建新的连续内存数据以确保正确传输
+    cv::Mat continuous_frame;
+    if (frame.isContinuous()) {
+        continuous_frame = frame.clone();
+    } else {
+        frame.copyTo(continuous_frame);
+    }
+    
+    // 创建Java字节数组
+    jbyteArray result = env->NewByteArray(frame_size);
+    if (result == NULL)
+    {
+        __android_log_print(ANDROID_LOG_ERROR, "ncnn", "getCurrentFrame: NewByteArray failed");
+        return NULL;
+    }
+    
+    // 安全地复制数据
+    env->SetByteArrayRegion(result, 0, frame_size, (jbyte*)continuous_frame.data);
+    
+    __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "getCurrentFrame: success, size=%dx%d, bytes=%d", 
+                       frame.cols, frame.rows, frame_size);
+    
+    return result;
+}
+
 }

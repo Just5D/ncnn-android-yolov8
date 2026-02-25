@@ -24,6 +24,11 @@
 #include <media/NdkImageReader.h>
 
 #include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
+
+#include "mat.h"
+#include "platform.h"
 
 class NdkCamera
 {
@@ -67,6 +72,9 @@ public:
 
     virtual void on_image(const unsigned char* nv21, int nv21_width, int nv21_height) const;
 
+    // 获取当前帧的RGB数据
+    cv::Mat get_current_frame() const;
+
 public:
     mutable int accelerometer_orientation;
 
@@ -75,6 +83,10 @@ private:
     mutable ASensorEventQueue* sensor_event_queue;
     const ASensor* accelerometer_sensor;
     ANativeWindow* win;
+    
+    // 存储最新的帧数据
+    mutable cv::Mat latest_frame;
+    mutable ncnn::Mutex frame_mutex;
 };
 
 #endif // NDKCAMERA_H

@@ -469,10 +469,29 @@ void NdkCameraWindow::set_window(ANativeWindow* _win)
 
 void NdkCameraWindow::on_image_render(cv::Mat& rgb) const
 {
+    // 保存最新的帧数据
+    {
+        ncnn::MutexLockGuard g(frame_mutex);
+        latest_frame = rgb.clone();
+        __android_log_print(ANDROID_LOG_DEBUG, "NdkCameraWindow", "on_image_render: saved frame %dx%d", 
+                           rgb.cols, rgb.rows);
+    }
 }
 
 void NdkCameraWindow::on_image(const unsigned char* nv21, int nv21_width, int nv21_height) const
 {
+    // 添加安全检查
+    if (!nv21 || nv21_width <= 0 || nv21_height <= 0) {
+        __android_log_print(ANDROID_LOG_ERROR, "NdkCameraWindow", "Invalid NV21 data");
+        return;
+    }
+    
+    // 检查win是否存在
+    if (!win) {
+        __android_log_print(ANDROID_LOG_ERROR, "NdkCameraWindow", "No window set");
+        return;
+    }
+    
     // resolve orientation from camera_orientation and accelerometer_sensor
     {
         if (!sensor_event_queue)
@@ -521,251 +540,105 @@ void NdkCameraWindow::on_image(const unsigned char* nv21, int nv21_width, int nv
         }
     }
 
-    // roi crop and rotate nv21
-    int nv21_roi_x = 0;
-    int nv21_roi_y = 0;
-    int nv21_roi_w = 0;
-    int nv21_roi_h = 0;
-    int roi_x = 0;
-    int roi_y = 0;
-    int roi_w = 0;
-    int roi_h = 0;
+    // 恢复原始的完整处理逻辑，包括旋转和裁剪
+    // rotate nv21
+    int w = 0;
+    int h = 0;
     int rotate_type = 0;
-    int render_w = 0;
-    int render_h = 0;
-    int render_rotate_type = 0;
     {
-        int win_w = ANativeWindow_getWidth(win);
-        int win_h = ANativeWindow_getHeight(win);
-
-        if (accelerometer_orientation == 90 || accelerometer_orientation == 270)
+        if (camera_orientation == 0)
         {
-            std::swap(win_w, win_h);
+            w = nv21_width;
+            h = nv21_height;
+            rotate_type = camera_facing == 0 ? 2 : 1;
         }
-
-        const int final_orientation = (camera_orientation + accelerometer_orientation) % 360;
-
-        if (final_orientation == 0 || final_orientation == 180)
+        if (camera_orientation == 90)
         {
-            if (win_w * nv21_height > win_h * nv21_width)
-            {
-                roi_w = nv21_width;
-                roi_h = (nv21_width * win_h / win_w) / 2 * 2;
-                roi_x = 0;
-                roi_y = ((nv21_height - roi_h) / 2) / 2 * 2;
-            }
-            else
-            {
-                roi_h = nv21_height;
-                roi_w = (nv21_height * win_w / win_h) / 2 * 2;
-                roi_x = ((nv21_width - roi_w) / 2) / 2 * 2;
-                roi_y = 0;
-            }
-
-            nv21_roi_x = roi_x;
-            nv21_roi_y = roi_y;
-            nv21_roi_w = roi_w;
-            nv21_roi_h = roi_h;
+            w = nv21_height;
+            h = nv21_width;
+            rotate_type = camera_facing == 0 ? 5 : 6;
         }
-        if (final_orientation == 90 || final_orientation == 270)
+        if (camera_orientation == 180)
         {
-            if (win_w * nv21_width > win_h * nv21_height)
-            {
-                roi_w = nv21_height;
-                roi_h = (nv21_height * win_h / win_w) / 2 * 2;
-                roi_x = 0;
-                roi_y = ((nv21_width - roi_h) / 2) / 2 * 2;
-            }
-            else
-            {
-                roi_h = nv21_width;
-                roi_w = (nv21_width * win_w / win_h) / 2 * 2;
-                roi_x = ((nv21_height - roi_w) / 2) / 2 * 2;
-                roi_y = 0;
-            }
-
-            nv21_roi_x = roi_y;
-            nv21_roi_y = roi_x;
-            nv21_roi_w = roi_h;
-            nv21_roi_h = roi_w;
+            w = nv21_width;
+            h = nv21_height;
+            rotate_type = camera_facing == 0 ? 4 : 3;
         }
-
-        if (camera_facing == 0)
+        if (camera_orientation == 270)
         {
-            if (camera_orientation == 0 && accelerometer_orientation == 0)
-            {
-                rotate_type = 2;
-            }
-            if (camera_orientation == 0 && accelerometer_orientation == 90)
-            {
-                rotate_type = 7;
-            }
-            if (camera_orientation == 0 && accelerometer_orientation == 180)
-            {
-                rotate_type = 4;
-            }
-            if (camera_orientation == 0 && accelerometer_orientation == 270)
-            {
-                rotate_type = 5;
-            }
-            if (camera_orientation == 90 && accelerometer_orientation == 0)
-            {
-                rotate_type = 5;
-            }
-            if (camera_orientation == 90 && accelerometer_orientation == 90)
-            {
-                rotate_type = 2;
-            }
-            if (camera_orientation == 90 && accelerometer_orientation == 180)
-            {
-                rotate_type = 7;
-            }
-            if (camera_orientation == 90 && accelerometer_orientation == 270)
-            {
-                rotate_type = 4;
-            }
-            if (camera_orientation == 180 && accelerometer_orientation == 0)
-            {
-                rotate_type = 4;
-            }
-            if (camera_orientation == 180 && accelerometer_orientation == 90)
-            {
-                rotate_type = 5;
-            }
-            if (camera_orientation == 180 && accelerometer_orientation == 180)
-            {
-                rotate_type = 2;
-            }
-            if (camera_orientation == 180 && accelerometer_orientation == 270)
-            {
-                rotate_type = 7;
-            }
-            if (camera_orientation == 270 && accelerometer_orientation == 0)
-            {
-                rotate_type = 7;
-            }
-            if (camera_orientation == 270 && accelerometer_orientation == 90)
-            {
-                rotate_type = 4;
-            }
-            if (camera_orientation == 270 && accelerometer_orientation == 180)
-            {
-                rotate_type = 5;
-            }
-            if (camera_orientation == 270 && accelerometer_orientation == 270)
-            {
-                rotate_type = 2;
-            }
-        }
-        else
-        {
-            if (final_orientation == 0)
-            {
-                rotate_type = 1;
-            }
-            if (final_orientation == 90)
-            {
-                rotate_type = 6;
-            }
-            if (final_orientation == 180)
-            {
-                rotate_type = 3;
-            }
-            if (final_orientation == 270)
-            {
-                rotate_type = 8;
-            }
-        }
-
-        if (accelerometer_orientation == 0)
-        {
-            render_w = roi_w;
-            render_h = roi_h;
-            render_rotate_type = 1;
-        }
-        if (accelerometer_orientation == 90)
-        {
-            render_w = roi_h;
-            render_h = roi_w;
-            render_rotate_type = 8;
-        }
-        if (accelerometer_orientation == 180)
-        {
-            render_w = roi_w;
-            render_h = roi_h;
-            render_rotate_type = 3;
-        }
-        if (accelerometer_orientation == 270)
-        {
-            render_w = roi_h;
-            render_h = roi_w;
-            render_rotate_type = 6;
+            w = nv21_height;
+            h = nv21_width;
+            rotate_type = camera_facing == 0 ? 7 : 8;
         }
     }
 
-    // crop and rotate nv21
-    cv::Mat nv21_croprotated(roi_h + roi_h / 2, roi_w, CV_8UC1);
+    cv::Mat nv21_rotated(h + h / 2, w, CV_8UC1);
+    ncnn::kanna_rotate_yuv420sp(nv21, nv21_width, nv21_height, nv21_rotated.data, w, h, rotate_type);
+
+    // nv21_rotated to rgb
+    cv::Mat rgb(h, w, CV_8UC3);
+    ncnn::yuv420sp2rgb(nv21_rotated.data, w, h, rgb.data);
+
+    // 保存帧数据（使用旋转后的正确尺寸）
     {
-        const unsigned char* srcY = nv21 + nv21_roi_y * nv21_width + nv21_roi_x;
-        unsigned char* dstY = nv21_croprotated.data;
-        ncnn::kanna_rotate_c1(srcY, nv21_roi_w, nv21_roi_h, nv21_width, dstY, roi_w, roi_h, roi_w, rotate_type);
-
-        const unsigned char* srcUV = nv21 + nv21_width * nv21_height + nv21_roi_y * nv21_width / 2 + nv21_roi_x;
-        unsigned char* dstUV = nv21_croprotated.data + roi_w * roi_h;
-        ncnn::kanna_rotate_c2(srcUV, nv21_roi_w / 2, nv21_roi_h / 2, nv21_width, dstUV, roi_w / 2, roi_h / 2, roi_w, rotate_type);
+        ncnn::MutexLockGuard g(frame_mutex);
+        latest_frame = rgb.clone();
+        __android_log_print(ANDROID_LOG_DEBUG, "NdkCameraWindow", "on_image: saved rotated frame %dx%d", 
+                           rgb.cols, rgb.rows);
     }
-
-    // nv21_croprotated to rgb
-    cv::Mat rgb(roi_h, roi_w, CV_8UC3);
-    ncnn::yuv420sp2rgb(nv21_croprotated.data, roi_w, roi_h, rgb.data);
-
+    
+    // 调用渲染回调
     on_image_render(rgb);
-
-    // rotate to native window orientation
-    cv::Mat rgb_render(render_h, render_w, CV_8UC3);
-    ncnn::kanna_rotate_c3(rgb.data, roi_w, roi_h, rgb_render.data, render_w, render_h, render_rotate_type);
-
-    ANativeWindow_setBuffersGeometry(win, render_w, render_h, AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM);
+    
+    // 显示到窗口（使用旋转后的尺寸）
+    ANativeWindow_setBuffersGeometry(win, w, h, AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM);
 
     ANativeWindow_Buffer buf;
     ANativeWindow_lock(win, &buf, NULL);
 
-    // scale to target size
+    // 像素复制（保持原有的颜色通道处理）
     if (buf.format == AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM || buf.format == AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM)
     {
-        for (int y = 0; y < render_h; y++)
+        for (int y = 0; y < h && y < buf.height; y++)
         {
-            const unsigned char* ptr = rgb_render.ptr<const unsigned char>(y);
-            unsigned char* outptr = (unsigned char*)buf.bits + buf.stride * 4 * y;
-
-            int x = 0;
-#if __ARM_NEON
-            for (; x + 7 < render_w; x += 8)
+            const unsigned char* src_ptr = rgb.ptr<const unsigned char>(y);
+            unsigned char* dst_ptr = (unsigned char*)buf.bits + buf.stride * 4 * y;
+            
+            int copy_width = std::min(w, buf.width);
+            for (int x = 0; x < copy_width; x++)
             {
-                uint8x8x3_t _rgb = vld3_u8(ptr);
-                uint8x8x4_t _rgba;
-                _rgba.val[0] = _rgb.val[0];
-                _rgba.val[1] = _rgb.val[1];
-                _rgba.val[2] = _rgb.val[2];
-                _rgba.val[3] = vdup_n_u8(255);
-                vst4_u8(outptr, _rgba);
-
-                ptr += 24;
-                outptr += 32;
-            }
-#endif // __ARM_NEON
-            for (; x < render_w; x++)
-            {
-                outptr[0] = ptr[0];
-                outptr[1] = ptr[1];
-                outptr[2] = ptr[2];
-                outptr[3] = 255;
-
-                ptr += 3;
-                outptr += 4;
+                dst_ptr[0] = src_ptr[0];  // B
+                dst_ptr[1] = src_ptr[1];  // G
+                dst_ptr[2] = src_ptr[2];  // R
+                dst_ptr[3] = 255;         // A
+                
+                src_ptr += 3;
+                dst_ptr += 4;
             }
         }
     }
 
     ANativeWindow_unlockAndPost(win);
+}
+
+cv::Mat NdkCameraWindow::get_current_frame() const
+{
+    ncnn::MutexLockGuard g(frame_mutex);
+    __android_log_print(ANDROID_LOG_DEBUG, "NdkCameraWindow", "get_current_frame: latest_frame empty=%d", 
+                       latest_frame.empty() ? 1 : 0);
+    
+    if (latest_frame.empty())
+    {
+        // 返回一个默认的黑色图像
+        __android_log_print(ANDROID_LOG_DEBUG, "NdkCameraWindow", "get_current_frame: returning black frame");
+        return cv::Mat(480, 640, CV_8UC3, cv::Scalar(0, 0, 0));
+    }
+    
+    // 创建一个新的Mat来确保数据完整性，避免内存访问冲突
+    cv::Mat frame_copy;
+    latest_frame.copyTo(frame_copy);
+    
+    __android_log_print(ANDROID_LOG_DEBUG, "NdkCameraWindow", "get_current_frame: returning copied frame %dx%d", 
+                       frame_copy.cols, frame_copy.rows);
+    return frame_copy;
 }
