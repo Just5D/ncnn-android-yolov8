@@ -98,6 +98,9 @@ int YOLOv8_cls::detect(const cv::Mat& rgb, std::vector<Object>& objects)
 
     // return top-5
     get_topk(out, topk, objects);
+    
+    // 保存检测结果到last_objects
+    last_objects = objects;
 
     return 0;
 }

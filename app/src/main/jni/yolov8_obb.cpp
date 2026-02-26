@@ -390,6 +390,9 @@ int YOLOv8_obb::detect(const cv::Mat& rgb, std::vector<Object>& objects)
 
         objects[i] = obj;
     }
+    
+    // 保存检测结果到last_objects
+    last_objects = objects;
 
     return 0;
 }

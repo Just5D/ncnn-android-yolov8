@@ -48,10 +48,14 @@ public:
 
     virtual int detect(const cv::Mat& rgb, std::vector<Object>& objects) = 0;
     virtual int draw(cv::Mat& rgb, const std::vector<Object>& objects) = 0;
+    
+    // 获取最后一次检测的结果
+    const std::vector<Object>& getLastObjects() const { return last_objects; }
 
 protected:
     ncnn::Net yolov8;
     int det_target_size;
+    std::vector<Object> last_objects;  // 保存最后一次检测的结果
 };
 
 class YOLOv8_det : public YOLOv8

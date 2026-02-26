@@ -23,6 +23,11 @@
 #include <string>
 #include <vector>
 
+#include <fstream>
+#include <sstream>
+#include <iomanip>
+#include <ctime>
+
 #include <platform.h>
 #include <benchmark.h>
 
@@ -36,6 +41,75 @@
 #if __ARM_NEON
 #include <arm_neon.h>
 #endif // __ARM_NEON
+
+// JSON 相关辅助函数
+static std::string getCurrentTimeString()
+{
+    time_t now = time(nullptr);
+    tm* tm_now = localtime(&now);
+    
+    char buffer[64];
+    strftime(buffer, sizeof(buffer), "%Y%m%d_%H%M%S", tm_now);
+    return std::string(buffer);
+}
+
+static void saveObjectsToJson(const std::vector<Object>& objects, int width, int height, const std::string& filename)
+{
+    std::ofstream file(filename);
+    if (!file.is_open()) {
+        __android_log_print(ANDROID_LOG_ERROR, "MainActivity", "Failed to open JSON file for writing: %s", filename.c_str());
+        return;
+    }
+    
+    file << "{\n";
+    file << "  \"timestamp\": \"" << getCurrentTimeString() << "\",\n";
+    file << "  \"image_width\": " << width << ",\n";
+    file << "  \"image_height\": " << height << ",\n";
+    file << "  \"detections\": [\n";
+    
+    for (size_t i = 0; i < objects.size(); i++) {
+        const Object& obj = objects[i];
+        
+        file << "    {\n";
+        file << "      \"class_id\": " << obj.label << ",\n";
+        file << "      \"confidence\": " << obj.prob << ",\n";
+        file << "      \"bbox\": {\n";
+        file << "        \"x\": " << obj.rect.x << ",\n";
+        file << "        \"y\": " << obj.rect.y << ",\n";
+        file << "        \"width\": " << obj.rect.width << ",\n";
+        file << "        \"height\": " << obj.rect.height << "\n";
+        file << "      }";
+        
+        // 如果有 mask 数据（分割任务）
+        if (!obj.mask.empty()) {
+            file << ",\n      \"mask_size\": " << obj.mask.size();
+        }
+        
+        // 如果有 keypoints（姿态检测）
+        if (!obj.keypoints.empty()) {
+            file << ",\n      \"keypoints\": [";
+            for (size_t j = 0; j < obj.keypoints.size(); j++) {
+                if (j > 0) file << ",";
+                file << "\n        {";
+                file << "\"x\": " << obj.keypoints[j].p.x << ", ";
+                file << "\"y\": " << obj.keypoints[j].p.y << ", ";
+                file << "\"visible\": " << (obj.keypoints[j].prob > 0 ? 1 : 0);
+                file << "}";
+            }
+            file << "\n      ]";
+        }
+        
+        file << "\n    }";
+        if (i < objects.size() - 1) file << ",";
+        file << "\n";
+    }
+    
+    file << "  ]\n";
+    file << "}\n";
+    
+    file.close();
+    __android_log_print(ANDROID_LOG_DEBUG, "MainActivity", "JSON saved: %s with %zu objects", filename.c_str(), objects.size());
+}
 
 static int draw_unsupported(cv::Mat& rgb)
 {
@@ -357,6 +431,22 @@ JNIEXPORT void JNICALL Java_com_tencent_yolov8ncnn_MainActivity_nativeCapture(JN
     __android_log_print(ANDROID_LOG_DEBUG, "MainActivity", 
                        "Frame data pointers - with_boxes: %p, original: %p", 
                        frame_with_boxes.data, frame_original.data);
+    
+    // **新增：保存检测结果为 JSON**
+    if (g_yolov8) {
+        std::vector<Object> objects = g_yolov8->getLastObjects();
+        
+        // 获取当前时间作为文件名
+        std::string timeStr = getCurrentTimeString();
+        
+        // 使用应用内部存储路径
+        std::string jsonPath = "/data/data/com.tencent.yolov8ncnn/files/detections/detection_" + timeStr + ".json";
+        
+        // 确保目录存在
+        system("mkdir -p /data/data/com.tencent.yolov8ncnn/files/detections");
+        
+        saveObjectsToJson(objects, width, height, jsonPath);
+    }
     
     // 1. 转换带检测框的帧为 RGBA（用于显示）
     int rgbaSize = width * height * 4;

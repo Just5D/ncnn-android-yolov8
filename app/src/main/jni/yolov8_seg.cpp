@@ -490,6 +490,9 @@ int YOLOv8_seg::detect(const cv::Mat& rgb, std::vector<Object>& objects)
         }
     } objects_area_greater;
     std::sort(objects.begin(), objects.end(), objects_area_greater);
+    
+    // 保存检测结果到last_objects
+    last_objects = objects;
 
     return 0;
 }

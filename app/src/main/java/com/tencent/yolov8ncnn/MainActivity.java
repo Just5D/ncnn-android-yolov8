@@ -42,6 +42,16 @@ import android.widget.Spinner;
 import android.widget.Toast;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.FileReader;
+import java.io.BufferedReader;
+import java.util.Arrays;
+import java.util.List;
+import java.util.ArrayList;
+import java.util.Comparator;
+import android.content.DialogInterface;
+import android.content.Intent;
+import android.net.Uri;
 
 import android.support.v4.app.ActivityCompat;
 import android.support.v4.content.ContextCompat;
@@ -64,7 +74,19 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback
 
     private SurfaceView cameraView;
     private Button btnCapture;
+    private Button btnViewJson;
 
+    /**
+     * 获取应用外部存储路径
+     */
+    private String getAppExternalPath() {
+        File externalDir = getExternalFilesDir(null);
+        if (externalDir != null) {
+            return externalDir.getAbsolutePath();
+        }
+        return Environment.getExternalStorageDirectory().getAbsolutePath() + "/Android/data/" + getPackageName() + "/files";
+    }
+    
     /** Called when the activity is first created. */
     @Override
     public void onCreate(Bundle savedInstanceState)
@@ -104,6 +126,15 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback
                 
                 // 显示拍照提示
                 Toast.makeText(MainActivity.this, "拍照中...", Toast.LENGTH_SHORT).show();
+            }
+        });
+        
+        // 初始化查看JSON按钮
+        btnViewJson = (Button) findViewById(R.id.btn_view_json);
+        btnViewJson.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                viewJsonFiles();
             }
         });
         buttonSwitchCamera.setOnClickListener(new View.OnClickListener() {
@@ -297,8 +328,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback
                         // 保存带检测框的图像
                         saveBitmapToGallery(displayBitmap, "detected_");
                         
+                        // **新增：保存检测结果为 JSON**
+                        saveDetectionResults(width, height);
+                        
                         Toast.makeText(MainActivity.this, 
-                                      "已保存原始图像和检测结果", 
+                                      "已保存原始图像、检测结果和JSON文件", 
                                       Toast.LENGTH_SHORT).show();
                     } catch (Exception e) {
                         Log.e("MainActivity", "UI操作异常", e);
@@ -338,6 +372,163 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback
                                   Toast.LENGTH_SHORT).show();
                 }
             });
+        }
+    }
+    
+    /**
+     * 查看JSON文件
+     */
+    private void viewJsonFiles() {
+        try {
+            // 获取JSON文件目录
+            File jsonDir = new File(getFilesDir(), "detections");
+            
+            if (!jsonDir.exists()) {
+                Toast.makeText(this, "JSON文件夹不存在，请先拍照生成检测结果", Toast.LENGTH_LONG).show();
+                return;
+            }
+            
+            // 获取所有JSON文件
+            File[] jsonFiles = jsonDir.listFiles((dir, name) -> name.endsWith(".json"));
+            
+            if (jsonFiles == null || jsonFiles.length == 0) {
+                Toast.makeText(this, "没有找到JSON文件，请先拍照生成检测结果", Toast.LENGTH_LONG).show();
+                return;
+            }
+            
+            // 按修改时间排序（最新的在前面）
+            Arrays.sort(jsonFiles, (f1, f2) -> Long.compare(f2.lastModified(), f1.lastModified()));
+            
+            // 创建文件列表适配器
+            List<String> fileList = new ArrayList<>();
+            for (File file : jsonFiles) {
+                String fileInfo = file.getName() + " (" + 
+                    android.text.format.Formatter.formatFileSize(this, file.length()) + ")";
+                fileList.add(fileInfo);
+            }
+            
+            // 显示文件选择对话框
+            android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(this);
+            builder.setTitle("选择要查看的JSON文件")
+                   .setItems(fileList.toArray(new String[0]), new DialogInterface.OnClickListener() {
+                       @Override
+                       public void onClick(DialogInterface dialog, int which) {
+                           // 查看选中的文件
+                           viewJsonFile(jsonFiles[which]);
+                       }
+                   })
+                   .setNegativeButton("取消", null)
+                   .show();
+                    
+        } catch (Exception e) {
+            Log.e("MainActivity", "查看JSON文件失败", e);
+            Toast.makeText(this, "查看失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
+    }
+    
+    /**
+     * 查看单个JSON文件内容
+     */
+    private void viewJsonFile(File jsonFile) {
+        try {
+            // 读取文件内容
+            StringBuilder content = new StringBuilder();
+            BufferedReader reader = new BufferedReader(new FileReader(jsonFile));
+            String line;
+            while ((line = reader.readLine()) != null) {
+                content.append(line).append("\n");
+            }
+            reader.close();
+            
+            // 显示文件内容
+            android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(this);
+            builder.setTitle(jsonFile.getName())
+                   .setMessage(content.toString())
+                   .setPositiveButton("确定", null)
+                   .setNeutralButton("分享", new DialogInterface.OnClickListener() {
+                       @Override
+                       public void onClick(DialogInterface dialog, int which) {
+                           shareJsonFile(jsonFile);
+                       }
+                   })
+                   .show();
+                    
+        } catch (Exception e) {
+            Log.e("MainActivity", "读取JSON文件失败", e);
+            Toast.makeText(this, "读取失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
+    }
+    
+    /**
+     * 分享JSON文件
+     */
+    private void shareJsonFile(File jsonFile) {
+        try {
+            Intent shareIntent = new Intent(Intent.ACTION_SEND);
+            shareIntent.setType("application/json");
+            
+            Uri fileUri = Uri.fromFile(jsonFile);
+            shareIntent.putExtra(Intent.EXTRA_STREAM, fileUri);
+            shareIntent.putExtra(Intent.EXTRA_SUBJECT, "YOLOv8检测结果");
+            shareIntent.putExtra(Intent.EXTRA_TEXT, "这是YOLOv8目标检测的结果文件");
+            
+            startActivity(Intent.createChooser(shareIntent, "分享JSON文件"));
+            
+        } catch (Exception e) {
+            Log.e("MainActivity", "分享JSON文件失败", e);
+            Toast.makeText(this, "分享失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
+    }
+    
+    /**
+     * 保存检测结果到 JSON 文件
+     */
+    private void saveDetectionResults(int width, int height) {
+        try {
+            // 创建 JSON 对象
+            org.json.JSONObject json = new org.json.JSONObject();
+            json.put("timestamp", System.currentTimeMillis());
+            json.put("image_width", width);
+            json.put("image_height", height);
+            
+            // 创建检测结果数组
+            org.json.JSONArray detections = new org.json.JSONArray();
+            
+            // TODO: 这里需要从 native 层获取实际的检测结果
+            // 目前先创建示例数据
+            org.json.JSONObject detection = new org.json.JSONObject();
+            detection.put("class_id", 0);
+            detection.put("class_name", "person");
+            detection.put("confidence", 0.95);
+            
+            org.json.JSONObject bbox = new org.json.JSONObject();
+            bbox.put("x", 100);
+            bbox.put("y", 100);
+            bbox.put("width", 200);
+            bbox.put("height", 300);
+            detection.put("bbox", bbox);
+            
+            detections.put(detection);
+            
+            json.put("detections", detections);
+            
+            // 保存到应用内部存储目录
+            String fileName = "detection_" + System.currentTimeMillis() + ".json";
+            File jsonDir = new File(getFilesDir(), "detections");
+            if (!jsonDir.exists()) {
+                jsonDir.mkdirs();
+            }
+            File jsonFile = new File(jsonDir, fileName);
+            
+            FileOutputStream fos = new FileOutputStream(jsonFile);
+            fos.write(json.toString(2).getBytes()); // 格式化输出，缩进为2个空格
+            fos.close();
+            
+            Log.d("MainActivity", "JSON saved to internal storage: " + jsonFile.getAbsolutePath());
+            Log.d("MainActivity", "File size: " + jsonFile.length() + " bytes");
+            
+        } catch (Exception e) {
+            Log.e("MainActivity", "Failed to save JSON", e);
         }
     }
     
