@@ -305,57 +305,116 @@ JNIEXPORT void JNICALL Java_com_tencent_yolov8ncnn_MainActivity_nativeCapture(JN
 {
     __android_log_print(ANDROID_LOG_DEBUG, "MainActivity", "nativeCapture called");
     
-    // 获取当前帧（已经是RGB格式）
-    cv::Mat frame = g_camera->get_current_frame();
-    
-    if (frame.empty()) {
-        __android_log_print(ANDROID_LOG_ERROR, "MainActivity", 
-                           "nativeCapture: frame is empty");
+    // 添加全面的安全检查
+    if (!g_camera) {
+        __android_log_print(ANDROID_LOG_ERROR, "MainActivity", "g_camera is null");
+        // 调用Java层的错误回调
+        jclass clazz = env->GetObjectClass(thiz);
+        jmethodID errorCallback = env->GetMethodID(clazz, "onCaptureError", "(Ljava/lang/String;)V");
+        if (errorCallback) {
+            jstring errorMsg = env->NewStringUTF("相机未初始化");
+            env->CallVoidMethod(thiz, errorCallback, errorMsg);
+            env->DeleteLocalRef(errorMsg);
+        }
         return;
     }
     
+    // 获取带检测框的帧
+    cv::Mat frame_with_boxes = g_camera->getFrameWithBoxes();
+    // 获取原始帧
+    cv::Mat frame_original = g_camera->getOriginalFrame();
+    
     __android_log_print(ANDROID_LOG_DEBUG, "MainActivity", 
-                       "nativeCapture: got frame %dx%d channels=%d", 
-                       frame.cols, frame.rows, frame.channels());
+                       "Frame sizes - with_boxes: %dx%d, original: %dx%d", 
+                       frame_with_boxes.cols, frame_with_boxes.rows,
+                       frame_original.cols, frame_original.rows);
     
-    // 准备返回给Java的数据
-    // 注意：frame是CV_8UC3 (BGR)，我们需要转换为RGBA
-    int width = frame.cols;
-    int height = frame.rows;
-    int dataSize = width * height * 4;  // RGBA
+    if (frame_with_boxes.empty()) {
+        __android_log_print(ANDROID_LOG_ERROR, "MainActivity", "frame_with_boxes is empty");
+        return;
+    }
     
-    jbyteArray byteArray = env->NewByteArray(dataSize);
-    jbyte* byteData = env->GetByteArrayElements(byteArray, NULL);
+    if (frame_original.empty()) {
+        __android_log_print(ANDROID_LOG_ERROR, "MainActivity", "frame_original is empty");
+        return;
+    }
     
-    // 手动转换BGR到RGBA
-    const unsigned char* bgrData = frame.data;
-    unsigned char* rgbaData = (unsigned char*)byteData;
+    // 验证帧尺寸一致性
+    if (frame_with_boxes.cols != frame_original.cols || 
+        frame_with_boxes.rows != frame_original.rows) {
+        __android_log_print(ANDROID_LOG_ERROR, "MainActivity", 
+                           "Frame dimensions mismatch: boxes(%dx%d) vs original(%dx%d)",
+                           frame_with_boxes.cols, frame_with_boxes.rows,
+                           frame_original.cols, frame_original.rows);
+        return;
+    }
     
+    int width = frame_with_boxes.cols;
+    int height = frame_with_boxes.rows;
+    
+    __android_log_print(ANDROID_LOG_DEBUG, "MainActivity", 
+                       "Captured frames: %dx%d", width, height);
+    __android_log_print(ANDROID_LOG_DEBUG, "MainActivity", 
+                       "Frame data pointers - with_boxes: %p, original: %p", 
+                       frame_with_boxes.data, frame_original.data);
+    
+    // 1. 转换带检测框的帧为 RGBA（用于显示）
+    int rgbaSize = width * height * 4;
+    jbyteArray boxedArray = env->NewByteArray(rgbaSize);
+    jbyte* boxedData = env->GetByteArrayElements(boxedArray, NULL);
+    
+    const unsigned char* bgrData = frame_with_boxes.data;  // OpenCV默认是BGR
+    unsigned char* rgbaData = (unsigned char*)boxedData;
+    
+    // **保持RGB格式**
+    // 帧数据已经是RGB格式，直接转换为RGBA用于显示
     for (int i = 0; i < width * height; i++) {
-        rgbaData[0] = bgrData[2];  // R
-        rgbaData[1] = bgrData[1];  // G
-        rgbaData[2] = bgrData[0];  // B
-        rgbaData[3] = 255;          // A
-        
+        rgbaData[0] = bgrData[0];  // R <- RGB的红色通道
+        rgbaData[1] = bgrData[1];  // G <- RGB的绿色通道
+        rgbaData[2] = bgrData[2];  // B <- RGB的蓝色通道
+        rgbaData[3] = 255;         // A (不透明)
         bgrData += 3;
         rgbaData += 4;
     }
     
-    env->ReleaseByteArrayElements(byteArray, byteData, 0);
+    env->ReleaseByteArrayElements(boxedArray, boxedData, 0);
     
-    // 调用Java回调
-    jclass clazz = env->GetObjectClass(thiz);
-    jmethodID callbackMethod = env->GetMethodID(clazz, 
-                                                "onCaptureComplete", 
-                                                "([BII)V");
-    if (callbackMethod) {
-        env->CallVoidMethod(thiz, callbackMethod, byteArray, width, height);
+    // 2. 转换原始帧为 RGB 数组
+    int rgbSize = width * height * 3;
+    jbyteArray originalArray = env->NewByteArray(rgbSize);
+    jbyte* originalData = env->GetByteArrayElements(originalArray, NULL);
+    
+    const unsigned char* origBgrData = frame_original.data;  // OpenCV的BGR数据
+    unsigned char* rgbOutData = (unsigned char*)originalData;
+    
+    // **保持RGB格式不变**
+    // 原始帧已经是RGB格式，直接复制
+    for (int i = 0; i < width * height; i++) {
+        rgbOutData[0] = origBgrData[0];  // R <- RGB的红色通道
+        rgbOutData[1] = origBgrData[1];  // G <- RGB的绿色通道
+        rgbOutData[2] = origBgrData[2];  // B <- RGB的蓝色通道
+        origBgrData += 3;
+        rgbOutData += 3;
     }
     
-    env->DeleteLocalRef(byteArray);
+    env->ReleaseByteArrayElements(originalArray, originalData, 0);
     
-    __android_log_print(ANDROID_LOG_DEBUG, "MainActivity", 
-                       "nativeCapture: completed");
+    // 调用 Java 回调
+    jclass clazz = env->GetObjectClass(thiz);
+    jmethodID callbackMethod = env->GetMethodID(clazz, 
+                                               "onCaptureComplete", 
+                                               "([B[BII)V");
+    if (callbackMethod) {
+        env->CallVoidMethod(thiz, callbackMethod, 
+                           boxedArray,      // 带检测框的帧 (RGBA)
+                           originalArray,   // 原始帧 (RGB)
+                           width, height);
+    }
+    
+    env->DeleteLocalRef(boxedArray);
+    env->DeleteLocalRef(originalArray);
+    
+    __android_log_print(ANDROID_LOG_DEBUG, "MainActivity", "nativeCapture completed");
 }
 
 // public native byte[] getCurrentFrame();

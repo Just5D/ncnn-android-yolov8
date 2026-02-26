@@ -75,6 +75,11 @@ public:
     // 获取当前帧的RGB数据
     cv::Mat get_current_frame() const;
     
+    // 获取带检测框的帧
+    cv::Mat getFrameWithBoxes() const;
+    // 获取原始帧  
+    cv::Mat getOriginalFrame() const;
+    
     // 拍照相关
     void set_capture_requested(bool requested) { 
         capture_requested = requested; 
@@ -98,6 +103,10 @@ private:
     // 存储最新的帧数据
     mutable cv::Mat latest_frame;
     mutable ncnn::Mutex frame_mutex;
+    
+    // 存储带检测框和原始帧
+    mutable cv::Mat latest_frame_with_boxes;  // 带检测框的帧
+    mutable cv::Mat latest_frame_original;     // 原始帧
     
     // 拍照标志
     mutable bool capture_requested;

@@ -573,44 +573,52 @@ void NdkCameraWindow::on_image(const unsigned char* nv21, int nv21_width, int nv
 
     // nv21_rotated to rgb
     cv::Mat rgb(h, w, CV_8UC3);
-    ncnn::yuv420sp2rgb(nv21_rotated.data, w, h, rgb.data);
+    ncnn::yuv420sp2rgb(nv21_rotated.data, w, h, rgb.data);  // 输出 RGB 格式
 
-    // **关键修改：统一图像保存逻辑，深拷贝避免数据竞争**
+    // **保存原始RGB帧**
     {
         ncnn::MutexLockGuard g(frame_mutex);
-        
-        // 使用 clone() 深拷贝确保数据完整性
-        latest_frame = rgb.clone();
-        
-        __android_log_print(ANDROID_LOG_DEBUG, "NdkCameraWindow", 
-                           "on_image: saved frame %dx%d (channels=%d)", 
-                           latest_frame.cols, latest_frame.rows, 
-                           latest_frame.channels());
+        latest_frame_original = rgb.clone();
     }
     
-    // 调用渲染回调（不再重复保存）
+    // 调用渲染回调（这里会绘制检测框）
     on_image_render(rgb);
     
-    // 显示到窗口（使用旋转后的尺寸）
+    // **保存带检测框的RGB帧**
+    {
+        ncnn::MutexLockGuard g(frame_mutex);
+        if (!rgb.empty()) {
+            latest_frame_with_boxes = rgb.clone();
+        }
+    }
+    
+    // **修复预览颜色：显示时需要 BGR，但 rgb 是 RGB**
+    // 创建一个 BGR 版本的图像用于显示
+    cv::Mat bgr_for_display;
+    cv::cvtColor(rgb, bgr_for_display, cv::COLOR_RGB2BGR);
+    
+    // 显示到窗口（使用 BGR 格式）
     ANativeWindow_setBuffersGeometry(win, w, h, AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM);
 
     ANativeWindow_Buffer buf;
     ANativeWindow_lock(win, &buf, NULL);
 
-    // 像素复制（保持原有的颜色通道处理）
+    // 像素复制（使用 BGR 数据）
     if (buf.format == AHARDWAREBUFFER_FORMAT_R8G8B8A8_UNORM || buf.format == AHARDWAREBUFFER_FORMAT_R8G8B8X8_UNORM)
     {
         for (int y = 0; y < h && y < buf.height; y++)
         {
-            const unsigned char* src_ptr = rgb.ptr<const unsigned char>(y);
+            // 使用 BGR 数据
+            const unsigned char* src_ptr = bgr_for_display.ptr<const unsigned char>(y);
             unsigned char* dst_ptr = (unsigned char*)buf.bits + buf.stride * 4 * y;
             
             int copy_width = std::min(w, buf.width);
             for (int x = 0; x < copy_width; x++)
             {
-                dst_ptr[0] = src_ptr[0];  // B
+                // src_ptr 是 BGR 格式
+                dst_ptr[0] = src_ptr[2];  // B
                 dst_ptr[1] = src_ptr[1];  // G
-                dst_ptr[2] = src_ptr[2];  // R
+                dst_ptr[2] = src_ptr[0];  // R
                 dst_ptr[3] = 255;         // A
                 
                 src_ptr += 3;
@@ -622,36 +630,37 @@ void NdkCameraWindow::on_image(const unsigned char* nv21, int nv21_width, int nv
     ANativeWindow_unlockAndPost(win);
 }
 
-cv::Mat NdkCameraWindow::get_current_frame() const
+// 实现获取帧的方法
+cv::Mat NdkCameraWindow::getFrameWithBoxes() const
 {
     ncnn::MutexLockGuard g(frame_mutex);
-    
-    if (latest_frame.empty()) {
+    if (latest_frame_with_boxes.empty()) {
         __android_log_print(ANDROID_LOG_WARN, "NdkCameraWindow", 
-                           "get_current_frame: frame is empty");
+                           "getFrameWithBoxes: empty");
         return cv::Mat();
     }
-    
-    // 深拷贝当前帧
-    cv::Mat frame_copy = latest_frame.clone();
-    
-    // **关键修复：转换 RGB 到 BGR**
-    // OpenCV 默认是 BGR，而 ncnn::yuv420sp2rgb 输出的是 RGB
-    // 所以需要交换 R 和 B 通道
-    for (int i = 0; i < frame_copy.rows; i++) {
-        unsigned char* row = frame_copy.ptr<unsigned char>(i);
-        for (int j = 0; j < frame_copy.cols; j++) {
-            // 交换 R(0) 和 B(2)
-            unsigned char temp = row[0];
-            row[0] = row[2];
-            row[2] = temp;
-            row += 3;
-        }
-    }
-    
     __android_log_print(ANDROID_LOG_DEBUG, "NdkCameraWindow", 
-                       "get_current_frame: returning %dx%d (RGB->BGR converted)", 
-                       frame_copy.cols, frame_copy.rows);
-    
-    return frame_copy;
+                       "getFrameWithBoxes: returning %dx%d (RGB)", 
+                       latest_frame_with_boxes.cols, latest_frame_with_boxes.rows);
+    return latest_frame_with_boxes.clone();  // 返回 RGB
+}
+
+cv::Mat NdkCameraWindow::getOriginalFrame() const
+{
+    ncnn::MutexLockGuard g(frame_mutex);
+    if (latest_frame_original.empty()) {
+        __android_log_print(ANDROID_LOG_WARN, "NdkCameraWindow", 
+                           "getOriginalFrame: empty");
+        return cv::Mat();
+    }
+    __android_log_print(ANDROID_LOG_DEBUG, "NdkCameraWindow", 
+                       "getOriginalFrame: returning %dx%d (RGB)", 
+                       latest_frame_original.cols, latest_frame_original.rows);
+    return latest_frame_original.clone();  // 返回 RGB
+}
+
+cv::Mat NdkCameraWindow::get_current_frame() const
+{
+    // 直接复用 getFrameWithBoxes() 方法
+    return getFrameWithBoxes();
 }

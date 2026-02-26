@@ -90,8 +90,20 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback
         btnCapture.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                // 使用新的nativeCapture方法
+                // 检查存储权限
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) 
+                        != PackageManager.PERMISSION_GRANTED) {
+                        requestPermissions(new String[]{Manifest.permission.WRITE_EXTERNAL_STORAGE}, 101);
+                        return;
+                    }
+                }
+                
+                // 调用 nativeCapture
                 nativeCapture();
+                
+                // 显示拍照提示
+                Toast.makeText(MainActivity.this, "拍照中...", Toast.LENGTH_SHORT).show();
             }
         });
         buttonSwitchCamera.setOnClickListener(new View.OnClickListener() {
@@ -215,28 +227,102 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback
     }
 
     /**
+     * JNI回调方法 - 处理nativeCapture的错误
+     */
+    private void onCaptureError(String errorMessage) {
+        Log.e("MainActivity", "Capture error: " + errorMessage);
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                Toast.makeText(MainActivity.this, 
+                              "拍照失败: " + errorMessage, 
+                              Toast.LENGTH_LONG).show();
+            }
+        });
+    }
+    
+    /**
      * JNI回调方法 - 处理nativeCapture的结果
      */
-    private void onCaptureComplete(byte[] imageData, int width, int height) {
+    private void onCaptureComplete(byte[] boxedFrame, byte[] originalFrame, int width, int height) {
         try {
-            Log.d("MainActivity", "onCaptureComplete: " + width + "x" + height + 
-                  " data length=" + imageData.length);
+            Log.d("MainActivity", "onCaptureComplete: " + width + "x" + height);
             
-            // 从RGBA字节数组创建Bitmap
-            Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
-            bitmap.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(imageData));
+            // 添加参数验证
+            if (boxedFrame == null || originalFrame == null) {
+                throw new IllegalArgumentException("Frame data is null");
+            }
             
-            final Bitmap finalBitmap = bitmap;
+            int expectedRgbaSize = width * height * 4;
+            int expectedRgbSize = width * height * 3;
+            
+            if (boxedFrame.length != expectedRgbaSize) {
+                throw new IllegalArgumentException("RGBA frame size mismatch: expected " + 
+                    expectedRgbaSize + ", got " + boxedFrame.length);
+            }
+            
+            if (originalFrame.length != expectedRgbSize) {
+                throw new IllegalArgumentException("RGB frame size mismatch: expected " + 
+                    expectedRgbSize + ", got " + originalFrame.length);
+            }
+            
+            // 1. 从RGBA数据创建带检测框的Bitmap（用于显示）
+            final Bitmap displayBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            displayBitmap.copyPixelsFromBuffer(java.nio.ByteBuffer.wrap(boxedFrame));
+            
+            // 2. 从RGB数据创建原始Bitmap（用于保存）
+            final Bitmap originalBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            
+            // **RGB 转 ARGB**
+            // JNI层保持RGB格式，这里将RGB转换为ARGB用于显示和保存
+            int[] pixels = new int[width * height];
+            for (int i = 0; i < width * height; i++) {
+                int r = originalFrame[i * 3] & 0xFF;      // R通道
+                int g = originalFrame[i * 3 + 1] & 0xFF;  // G通道
+                int b = originalFrame[i * 3 + 2] & 0xFF;  // B通道
+                pixels[i] = 0xFF000000 | (r << 16) | (g << 8) | b;  // ARGB格式
+            }
+            originalBitmap.setPixels(pixels, 0, width, 0, 0, width, height);
             
             runOnUiThread(new Runnable() {
                 @Override
                 public void run() {
-                    // 保存到相册
-                    saveBitmapToGallery(finalBitmap);
-                    
-                    Toast.makeText(MainActivity.this, 
-                                  "拍照成功: " + width + "x" + height, 
-                                  Toast.LENGTH_SHORT).show();
+                    try {
+                        // 显示带检测框的照片
+                        showCapturedImage(displayBitmap);
+                        
+                        // 保存原始图像
+                        saveBitmapToGallery(originalBitmap, "original_");
+                        
+                        // 保存带检测框的图像
+                        saveBitmapToGallery(displayBitmap, "detected_");
+                        
+                        Toast.makeText(MainActivity.this, 
+                                      "已保存原始图像和检测结果", 
+                                      Toast.LENGTH_SHORT).show();
+                    } catch (Exception e) {
+                        Log.e("MainActivity", "UI操作异常", e);
+                        Toast.makeText(MainActivity.this, 
+                                      "显示或保存失败: " + e.getMessage(), 
+                                      Toast.LENGTH_SHORT).show();
+                    } finally {
+                        // 延迟回收Bitmap，确保UI操作完成
+                        cameraView.postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                try {
+                                    if (displayBitmap != null && !displayBitmap.isRecycled()) {
+                                        displayBitmap.recycle();
+                                    }
+                                    if (originalBitmap != null && !originalBitmap.isRecycled()) {
+                                        originalBitmap.recycle();
+                                    }
+                                } catch (Exception e) {
+                                    Log.w("MainActivity", "Bitmap回收异常", e);
+                                }
+                            }
+                        }, 1000); // 1秒后回收
+                    }
                 }
             });
             
@@ -475,11 +561,40 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback
     }
 
     /**
+     * 显示拍照的照片
+     */
+    private void showCapturedImage(Bitmap bitmap) {
+        android.app.AlertDialog.Builder builder = new android.app.AlertDialog.Builder(this);
+        
+        android.widget.ImageView imageView = new android.widget.ImageView(this);
+        imageView.setImageBitmap(bitmap);
+        
+        // 计算合适的显示尺寸
+        int maxWidth = getResources().getDisplayMetrics().widthPixels;
+        int maxHeight = getResources().getDisplayMetrics().heightPixels / 2;
+        
+        imageView.setLayoutParams(new android.view.ViewGroup.LayoutParams(maxWidth, maxHeight));
+        imageView.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+        
+        builder.setTitle("检测结果预览")
+               .setView(imageView)
+               .setPositiveButton("确定", null)
+               .show();
+    }
+
+    /**
      * 保存Bitmap到相册
      */
     private void saveBitmapToGallery(Bitmap bitmap) {
+        saveBitmapToGallery(bitmap, "yolov8_capture_");
+    }
+    
+    /**
+     * 保存Bitmap到相册（带前缀）
+     */
+    private void saveBitmapToGallery(Bitmap bitmap, String prefix) {
         try {
-            String fileName = "yolov8_capture_" + System.currentTimeMillis() + ".jpg";
+            String fileName = prefix + System.currentTimeMillis() + ".jpg";
             String folderName = "yolov8ncnn";
             
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
@@ -532,10 +647,8 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback
                 Log.d("MainActivity", "图片已保存到: " + imageFile.getAbsolutePath());
             }
             
-            // 回收Bitmap
-            if (!bitmap.isRecycled()) {
-                bitmap.recycle();
-            }
+            // 不在这里回收Bitmap，由调用方负责回收
+            // 这样可以避免在UI操作中回收导致的闪退
             
         } catch (Exception e) {
             Log.e("MainActivity", "保存图片失败", e);
