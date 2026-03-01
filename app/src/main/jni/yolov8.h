@@ -51,6 +51,9 @@ public:
     
     // 获取最后一次检测的结果
     const std::vector<Object>& getLastObjects() const { return last_objects; }
+    
+    // 获取检测目标尺寸
+    int get_det_target_size() const { return det_target_size; }
 
 protected:
     ncnn::Net yolov8;

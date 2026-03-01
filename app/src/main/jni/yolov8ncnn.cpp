@@ -556,6 +556,19 @@ JNIEXPORT jbyteArray JNICALL Java_com_tencent_yolov8ncnn_YOLOv8Ncnn_getCurrentFr
 }
 
 // public native float[][] getDetectionPoints();
+// 全局变量存储显示尺寸
+static int g_display_width = 0;
+static int g_display_height = 0;
+
+// public native void setDisplaySize(int width, int height);
+JNIEXPORT void JNICALL Java_com_tencent_yolov8ncnn_YOLOv8Ncnn_setDisplaySize(JNIEnv* env, jobject thiz, jint width, jint height)
+{
+    g_display_width = width;
+    g_display_height = height;
+    __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "setDisplaySize: %dx%d", width, height);
+}
+
+// public native float[][] getDetectionPoints();
 JNIEXPORT jobjectArray JNICALL Java_com_tencent_yolov8ncnn_YOLOv8Ncnn_getDetectionPoints(JNIEnv* env, jobject thiz)
 {
     __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "getDetectionPoints");
@@ -576,6 +589,19 @@ JNIEXPORT jobjectArray JNICALL Java_com_tencent_yolov8ncnn_YOLOv8Ncnn_getDetecti
         return NULL;
     }
     
+    // 获取当前预览帧尺寸（YOLOv8已处理为原始图像坐标）
+    cv::Mat previewFrame = g_camera->get_current_frame();
+    if (previewFrame.empty()) {
+        __android_log_print(ANDROID_LOG_WARN, "ncnn", "getDetectionPoints: preview frame is empty");
+        return NULL;
+    }
+    
+    int imageWidth = previewFrame.cols;
+    int imageHeight = previewFrame.rows;
+    
+    __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "Image size: %dx%d", imageWidth, imageHeight);
+    __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "Display size: %dx%d", g_display_width, g_display_height);
+    
     // 获取Float数组类
     jclass floatArrayClass = env->FindClass("[F");
     if (floatArrayClass == NULL) {
@@ -594,9 +620,38 @@ JNIEXPORT jobjectArray JNICALL Java_com_tencent_yolov8ncnn_YOLOv8Ncnn_getDetecti
     for (size_t i = 0; i < objects.size(); i++) {
         const Object& obj = objects[i];
         
-        // 计算检测框中心点坐标
+        // 直接使用YOLOv8输出的中心点坐标（已经是原始图像坐标）
         float centerX = obj.rect.x + obj.rect.width / 2.0f;
         float centerY = obj.rect.y + obj.rect.height / 2.0f;
+        
+        // 边界检查
+        centerX = std::max(0.0f, std::min(centerX, (float)(imageWidth - 1)));
+        centerY = std::max(0.0f, std::min(centerY, (float)(imageHeight - 1)));
+        
+        __android_log_print(ANDROID_LOG_DEBUG, "ncnn", 
+                           "Point %zu - image coords: (%.2f,%.2f)", 
+                           i, centerX, centerY);
+        
+        // 直接缩放到SurfaceView尺寸
+        float screenX = 0.0f;
+        float screenY = 0.0f;
+        
+        if (g_display_width > 0 && g_display_height > 0) {
+            // 直接按比例缩放
+            screenX = centerX * (float)g_display_width / imageWidth;
+            screenY = centerY * (float)g_display_height / imageHeight;
+            
+            __android_log_print(ANDROID_LOG_DEBUG, "ncnn", 
+                               "Point %zu - direct scale: image(%.2f,%.2f) -> screen(%.2f,%.2f)", 
+                               i, centerX, centerY, screenX, screenY);
+        } else {
+            // 如果没有设置显示尺寸，返回原始坐标
+            screenX = centerX;
+            screenY = centerY;
+            __android_log_print(ANDROID_LOG_DEBUG, "ncnn", 
+                               "Point %zu - no display size, returning image coords: (%.2f,%.2f)", 
+                               i, screenX, screenY);
+        }
         
         // 创建包含x,y坐标的float数组
         jfloatArray pointArray = env->NewFloatArray(2);
@@ -605,7 +660,7 @@ JNIEXPORT jobjectArray JNICALL Java_com_tencent_yolov8ncnn_YOLOv8Ncnn_getDetecti
             continue;
         }
         
-        jfloat pointData[2] = {centerX, centerY};
+        jfloat pointData[2] = {screenX, screenY};
         env->SetFloatArrayRegion(pointArray, 0, 2, pointData);
         
         // 将float数组放入结果数组
@@ -613,10 +668,6 @@ JNIEXPORT jobjectArray JNICALL Java_com_tencent_yolov8ncnn_YOLOv8Ncnn_getDetecti
         
         // 释放局部引用
         env->DeleteLocalRef(pointArray);
-        
-        __android_log_print(ANDROID_LOG_DEBUG, "ncnn", 
-                           "getDetectionPoints: Point %zu - x=%.2f, y=%.2f, label=%d, confidence=%.3f", 
-                           i, centerX, centerY, obj.label, obj.prob);
     }
     
     __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "getDetectionPoints: success, returned %zu points", objects.size());

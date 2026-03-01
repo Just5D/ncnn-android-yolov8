@@ -25,6 +25,7 @@ public class YOLOv8Ncnn
     public native boolean setOutputWindow(Surface surface);
     public native byte[] getCurrentFrame(); // 新增：获取当前帧数据
     public native float[][] getDetectionPoints(); // 新增：获取检测点坐标
+    public native void setDisplaySize(int width, int height); // 新增：设置显示尺寸
 
     static {
         System.loadLibrary("yolov8ncnn");

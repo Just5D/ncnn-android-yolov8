@@ -92,6 +92,46 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback
     private Button btnConfirmSave;
 
     /**
+     * 将JNI返回的坐标直接转换为DetectionPoint列表
+     * JNI层已经完成了图像坐标到屏幕坐标的转换
+     * @param screenPoints JNI返回的屏幕坐标点数组 [[x1,y1], [x2,y2], ...]
+     * @return DetectionPoint列表
+     */
+    private List<DetectionPoint> convertToDetectionPoints(float[][] screenPoints) {
+        List<DetectionPoint> points = new ArrayList<>();
+        
+        if (screenPoints == null || screenPoints.length == 0) {
+            return points;
+        }
+        
+        // 获取SurfaceView的实际显示尺寸用于边界检查
+        int surfaceWidth = cameraView.getWidth();
+        int surfaceHeight = cameraView.getHeight();
+        
+        Log.d("MainActivity", "Converting " + screenPoints.length + " points to DetectionPoints");
+        Log.d("MainActivity", "Surface size: " + surfaceWidth + "x" + surfaceHeight);
+        
+        // 直接使用JNI返回的屏幕坐标
+        for (int i = 0; i < screenPoints.length; i++) {
+            if (screenPoints[i].length >= 2) {
+                float x = screenPoints[i][0];
+                float y = screenPoints[i][1];
+                
+                // 边界检查
+                x = Math.max(0, Math.min(x, surfaceWidth - 1));
+                y = Math.max(0, Math.min(y, surfaceHeight - 1));
+                
+                DetectionPoint point = new DetectionPoint(x, y, i);
+                points.add(point);
+                
+                Log.d("MainActivity", "Point " + i + " - Screen(" + x + "," + y + ")");
+            }
+        }
+        
+        return points;
+    }
+    
+    /**
      * 开始盘点流程
      */
     private void startInventoryProcess() {
@@ -104,20 +144,11 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback
             // 2. 切换到盘点模式
             isInventoryMode = true;
             
-            // 3. 获取检测点数据
-            float[][] detectionPoints = yolov8ncnn.getDetectionPoints();
-            if (detectionPoints != null && detectionPoints.length > 0) {
-                inventoryPoints.clear();
-                for (int i = 0; i < detectionPoints.length; i++) {
-                    if (detectionPoints[i].length >= 2) {
-                        DetectionPoint point = new DetectionPoint(
-                            detectionPoints[i][0], // x坐标
-                            detectionPoints[i][1], // y坐标
-                            i
-                        );
-                        inventoryPoints.add(point);
-                    }
-                }
+            // 3. 获取检测点数据（JNI层已转换为屏幕坐标）
+            float[][] screenPoints = yolov8ncnn.getDetectionPoints();
+            if (screenPoints != null && screenPoints.length > 0) {
+                // 转换为DetectionPoint列表
+                inventoryPoints = convertToDetectionPoints(screenPoints);
                 
                 Log.d("MainActivity", "获取到 " + inventoryPoints.size() + " 个检测点");
                 
@@ -434,6 +465,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height)
     {
         yolov8ncnn.setOutputWindow(holder.getSurface());
+        // 设置显示尺寸用于坐标转换
+        yolov8ncnn.setDisplaySize(width, height);
+        Log.d("MainActivity", "Surface changed: " + width + "x" + height);
     }
 
     @Override
