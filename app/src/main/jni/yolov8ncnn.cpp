@@ -555,4 +555,73 @@ JNIEXPORT jbyteArray JNICALL Java_com_tencent_yolov8ncnn_YOLOv8Ncnn_getCurrentFr
     return result;
 }
 
+// public native float[][] getDetectionPoints();
+JNIEXPORT jobjectArray JNICALL Java_com_tencent_yolov8ncnn_YOLOv8Ncnn_getDetectionPoints(JNIEnv* env, jobject thiz)
+{
+    __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "getDetectionPoints");
+    
+    // 检查YOLOv8实例是否存在
+    if (!g_yolov8) {
+        __android_log_print(ANDROID_LOG_WARN, "ncnn", "getDetectionPoints: g_yolov8 is null");
+        return NULL;
+    }
+    
+    // 获取最后一次检测结果
+    std::vector<Object> objects = g_yolov8->getLastObjects();
+    
+    __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "getDetectionPoints: found %zu objects", objects.size());
+    
+    if (objects.empty()) {
+        __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "getDetectionPoints: no detection objects");
+        return NULL;
+    }
+    
+    // 获取Float数组类
+    jclass floatArrayClass = env->FindClass("[F");
+    if (floatArrayClass == NULL) {
+        __android_log_print(ANDROID_LOG_ERROR, "ncnn", "getDetectionPoints: Failed to find [F class");
+        return NULL;
+    }
+    
+    // 创建二维数组对象
+    jobjectArray result = env->NewObjectArray(objects.size(), floatArrayClass, NULL);
+    if (result == NULL) {
+        __android_log_print(ANDROID_LOG_ERROR, "ncnn", "getDetectionPoints: NewObjectArray failed");
+        return NULL;
+    }
+    
+    // 为每个检测对象创建坐标数组
+    for (size_t i = 0; i < objects.size(); i++) {
+        const Object& obj = objects[i];
+        
+        // 计算检测框中心点坐标
+        float centerX = obj.rect.x + obj.rect.width / 2.0f;
+        float centerY = obj.rect.y + obj.rect.height / 2.0f;
+        
+        // 创建包含x,y坐标的float数组
+        jfloatArray pointArray = env->NewFloatArray(2);
+        if (pointArray == NULL) {
+            __android_log_print(ANDROID_LOG_ERROR, "ncnn", "getDetectionPoints: NewFloatArray failed for point %zu", i);
+            continue;
+        }
+        
+        jfloat pointData[2] = {centerX, centerY};
+        env->SetFloatArrayRegion(pointArray, 0, 2, pointData);
+        
+        // 将float数组放入结果数组
+        env->SetObjectArrayElement(result, i, pointArray);
+        
+        // 释放局部引用
+        env->DeleteLocalRef(pointArray);
+        
+        __android_log_print(ANDROID_LOG_DEBUG, "ncnn", 
+                           "getDetectionPoints: Point %zu - x=%.2f, y=%.2f, label=%d, confidence=%.3f", 
+                           i, centerX, centerY, obj.label, obj.prob);
+    }
+    
+    __android_log_print(ANDROID_LOG_DEBUG, "ncnn", "getDetectionPoints: success, returned %zu points", objects.size());
+    
+    return result;
+}
+
 }

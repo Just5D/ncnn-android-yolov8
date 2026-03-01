@@ -38,6 +38,7 @@ import android.view.View;
 import android.view.WindowManager;
 import android.widget.AdapterView;
 import android.widget.Button;
+import android.widget.LinearLayout;
 import android.widget.Spinner;
 import android.widget.Toast;
 
@@ -75,10 +76,191 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback
     private SurfaceView cameraView;
     private Button btnCapture;
     private Button btnViewJson;
+    
+    // 相机状态管理
+    private boolean isCameraFrozen = false;
+    private Bitmap frozenFrame = null;
+    
+    // 盘点流程管理
+    private boolean isInventoryMode = false;
+    private List<DetectionPoint> inventoryPoints = new ArrayList<>();
+    private int currentPointIndex = 0;
+    
+    // UI组件引用
+    private DetectionOverlay detectionOverlay;
+    private Button btnStartInventory;
+    private Button btnConfirmSave;
 
     /**
-     * 获取应用外部存储路径
+     * 开始盘点流程
      */
+    private void startInventoryProcess() {
+        Log.d("MainActivity", "开始盘点流程");
+        
+        try {
+            // 1. 冻结相机
+            freezeCamera();
+            
+            // 2. 切换到盘点模式
+            isInventoryMode = true;
+            
+            // 3. 获取检测点数据
+            float[][] detectionPoints = yolov8ncnn.getDetectionPoints();
+            if (detectionPoints != null && detectionPoints.length > 0) {
+                inventoryPoints.clear();
+                for (int i = 0; i < detectionPoints.length; i++) {
+                    if (detectionPoints[i].length >= 2) {
+                        DetectionPoint point = new DetectionPoint(
+                            detectionPoints[i][0], // x坐标
+                            detectionPoints[i][1], // y坐标
+                            i
+                        );
+                        inventoryPoints.add(point);
+                    }
+                }
+                
+                Log.d("MainActivity", "获取到 " + inventoryPoints.size() + " 个检测点");
+                
+                // 4. 显示检测点覆盖层
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        detectionOverlay.setPoints(inventoryPoints);
+                        detectionOverlay.setVisibility(View.VISIBLE);
+                        detectionOverlay.setEditMode(true);
+                        
+                        // 隐藏拍照按钮，显示确认保存按钮
+                        btnCapture.setVisibility(View.GONE);
+                        btnViewJson.setVisibility(View.GONE);
+                        btnStartInventory.setVisibility(View.GONE);
+                        btnConfirmSave.setVisibility(View.VISIBLE);
+                        
+                        Toast.makeText(MainActivity.this, 
+                            "已进入盘点模式，共 " + inventoryPoints.size() + " 个目标", 
+                            Toast.LENGTH_LONG).show();
+                    }
+                });
+            } else {
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        Toast.makeText(MainActivity.this, 
+                            "未检测到目标，请确保相机已正确加载模型", 
+                            Toast.LENGTH_LONG).show();
+                        // 恢复相机
+                        resumeCamera();
+                        isInventoryMode = false;
+                    }
+                });
+            }
+            
+        } catch (Exception e) {
+            Log.e("MainActivity", "开始盘点流程失败: " + e.getMessage(), e);
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    Toast.makeText(MainActivity.this, 
+                        "开始盘点失败: " + e.getMessage(), 
+                        Toast.LENGTH_LONG).show();
+                }
+            });
+        }
+    }
+    
+    /**
+     * 确认并保存盘点结果
+     */
+    private void confirmAndSaveInventory() {
+        Log.d("MainActivity", "确认并保存盘点结果");
+        
+        try {
+            // 1. 获取最终的检测点数据
+            List<DetectionPoint> finalPoints = detectionOverlay.getPoints();
+            
+            // 2. 保存盘点数据
+            saveInventoryData(finalPoints);
+            
+            // 3. 恢复正常模式
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    // 隐藏覆盖层
+                    detectionOverlay.setVisibility(View.GONE);
+                    detectionOverlay.setEditMode(false);
+                    
+                    // 恢复按钮显示
+                    btnCapture.setVisibility(View.VISIBLE);
+                    btnViewJson.setVisibility(View.VISIBLE);
+                    btnStartInventory.setVisibility(View.VISIBLE);
+                    btnConfirmSave.setVisibility(View.GONE);
+                    
+                    Toast.makeText(MainActivity.this, 
+                        "盘点完成，已保存 " + finalPoints.size() + " 个目标数据", 
+                        Toast.LENGTH_LONG).show();
+                }
+            });
+            
+            // 4. 恢复相机
+            resumeCamera();
+            isInventoryMode = false;
+            inventoryPoints.clear();
+            currentPointIndex = 0;
+            
+        } catch (Exception e) {
+            Log.e("MainActivity", "保存盘点数据失败: " + e.getMessage(), e);
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    Toast.makeText(MainActivity.this, 
+                        "保存失败: " + e.getMessage(), 
+                        Toast.LENGTH_LONG).show();
+                }
+            });
+        }
+    }
+    
+    /**
+     * 保存盘点数据到JSON文件
+     */
+    private void saveInventoryData(List<DetectionPoint> points) {
+        try {
+            // 创建盘点数据对象
+            InventoryData inventoryData = new InventoryData();
+            inventoryData.setTimestamp(System.currentTimeMillis());
+            inventoryData.setPointCount(points.size());
+            
+            List<PointData> pointList = new ArrayList<>();
+            for (int i = 0; i < points.size(); i++) {
+                DetectionPoint point = points.get(i);
+                PointData pointData = new PointData();
+                pointData.setId(i);
+                pointData.setX(point.getX());
+                pointData.setY(point.getY());
+                pointData.setSelected(point.isSelected());
+                pointList.add(pointData);
+            }
+            inventoryData.setPoints(pointList);
+            
+            // 保存到JSON文件
+            String jsonString = inventoryData.toJson();
+            String fileName = "inventory_" + System.currentTimeMillis() + ".json";
+            File jsonDir = new File(getFilesDir(), "inventory");
+            if (!jsonDir.exists()) {
+                jsonDir.mkdirs();
+            }
+            
+            File jsonFile = new File(jsonDir, fileName);
+            java.io.FileWriter writer = new java.io.FileWriter(jsonFile);
+            writer.write(jsonString);
+            writer.close();
+            
+            Log.d("MainActivity", "盘点数据已保存到: " + jsonFile.getAbsolutePath());
+            
+        } catch (Exception e) {
+            Log.e("MainActivity", "保存盘点数据异常: " + e.getMessage(), e);
+            throw new RuntimeException(e);
+        }
+    }
     private String getAppExternalPath() {
         File externalDir = getExternalFilesDir(null);
         if (externalDir != null) {
@@ -101,6 +283,9 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
         cameraView = (SurfaceView) findViewById(R.id.cameraview);
+        
+        // 初始化检测点覆盖层
+        detectionOverlay = (DetectionOverlay) findViewById(R.id.detection_overlay);
 
         cameraView.getHolder().setFormat(PixelFormat.RGBA_8888);
         cameraView.getHolder().addCallback(this);
@@ -128,6 +313,34 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback
                 Toast.makeText(MainActivity.this, "拍照中...", Toast.LENGTH_SHORT).show();
             }
         });
+        
+        // 初始化开始盘点按钮
+        btnStartInventory = new Button(this);
+        btnStartInventory.setText("开始盘点");
+        btnStartInventory.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startInventoryProcess();
+            }
+        });
+        
+        // 初始化确认保存按钮
+        btnConfirmSave = new Button(this);
+        btnConfirmSave.setText("确认保存");
+        btnConfirmSave.setVisibility(View.GONE);
+        btnConfirmSave.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                confirmAndSaveInventory();
+            }
+        });
+        
+        // 将按钮添加到布局中
+        LinearLayout buttonContainer = (LinearLayout) findViewById(R.id.button_container);
+        if (buttonContainer != null) {
+            buttonContainer.addView(btnStartInventory);
+            buttonContainer.addView(btnConfirmSave);
+        }
         
         // 初始化查看JSON按钮
         btnViewJson = (Button) findViewById(R.id.btn_view_json);
@@ -865,11 +1078,186 @@ public class MainActivity extends Activity implements SurfaceHolder.Callback
         }
     }
 
-    @Override
+    /**
+     * 冻结相机预览
+     * 暂停相机并保存当前帧
+     */
+    public void freezeCamera() {
+        if (isCameraFrozen) return;
+        
+        Log.d("MainActivity", "freezeCamera called");
+        
+        try {
+            // 关闭相机
+            yolov8ncnn.closeCamera();
+            isCameraFrozen = true;
+            
+            // 获取当前帧并保存
+            byte[] frameData = yolov8ncnn.getCurrentFrame();
+            if (frameData != null && frameData.length > 0) {
+                // 将字节数组转换为Bitmap
+                int width = 640; // 默认宽度
+                int height = 480; // 默认高度
+                int expectedSize = width * height * 3;
+                
+                // 根据数据大小推算实际尺寸
+                if (frameData.length == 640 * 480 * 3) {
+                    width = 640;
+                    height = 480;
+                } else if (frameData.length == 1280 * 720 * 3) {
+                    width = 1280;
+                    height = 720;
+                } else if (frameData.length == 1920 * 1080 * 3) {
+                    width = 1920;
+                    height = 1080;
+                } else {
+                    // 根据数据大小计算尺寸
+                    int pixels = frameData.length / 3;
+                    width = (int) Math.sqrt(pixels * 4.0 / 3.0);
+                    height = pixels / width;
+                }
+                
+                // 创建Bitmap
+                frozenFrame = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+                int[] argbData = new int[width * height];
+                
+                // 转换BGR到ARGB
+                for (int i = 0; i < width * height; i++) {
+                    int dataIndex = i * 3;
+                    if (dataIndex + 2 < frameData.length) {
+                        int b = frameData[dataIndex] & 0xFF;
+                        int g = frameData[dataIndex + 1] & 0xFF;
+                        int r = frameData[dataIndex + 2] & 0xFF;
+                        argbData[i] = (0xFF << 24) | (r << 16) | (g << 8) | b;
+                    }
+                }
+                
+                frozenFrame.setPixels(argbData, 0, width, 0, 0, width, height);
+                Log.d("MainActivity", "Camera frozen, frame saved: " + width + "x" + height);
+            }
+            
+        } catch (Exception e) {
+            Log.e("MainActivity", "freezeCamera error: " + e.getMessage(), e);
+        }
+    }
+    
+    /**
+     * 恢复相机预览
+     * 重新打开相机并清理冻结帧
+     */
+    public void resumeCamera() {
+        if (!isCameraFrozen) return;
+        
+        Log.d("MainActivity", "resumeCamera called");
+        
+        try {
+            // 清理冻结的帧
+            if (frozenFrame != null && !frozenFrame.isRecycled()) {
+                frozenFrame.recycle();
+                frozenFrame = null;
+            }
+            
+            // 重新打开相机
+            yolov8ncnn.openCamera(facing);
+            isCameraFrozen = false;
+            
+            Log.d("MainActivity", "Camera resumed");
+            
+        } catch (Exception e) {
+            Log.e("MainActivity", "resumeCamera error: " + e.getMessage(), e);
+        }
+    }
+    
+    /**
+     * 获取冻结的帧
+     * @return 冻结的Bitmap帧，如果相机未冻结则返回null
+     */
+    public Bitmap getFrozenFrame() {
+        return frozenFrame;
+    }
+    
+    /**
+     * 检查相机是否处于冻结状态
+     * @return true表示相机已冻结，false表示正常运行
+     */
+    public boolean isCameraFrozen() {
+        return isCameraFrozen;
+    }
+    
+    /**
+     * 检查是否处于盘点模式
+     * @return true表示正在盘点，false表示正常模式
+     */
+    public boolean isInInventoryMode() {
+        return isInventoryMode;
+    }
+    
+    /**
+     * 获取当前盘点点位列表
+     * @return 当前的检测点列表
+     */
+    public List<DetectionPoint> getCurrentInventoryPoints() {
+        return new ArrayList<>(inventoryPoints);
+    }
+    
+    /**
+     * 取消盘点流程
+     */
+    public void cancelInventoryProcess() {
+        Log.d("MainActivity", "取消盘点流程");
+        
+        try {
+            // 恢复相机
+            resumeCamera();
+            
+            // 重置状态
+            isInventoryMode = false;
+            inventoryPoints.clear();
+            currentPointIndex = 0;
+            
+            // 更新UI
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    // 隐藏覆盖层
+                    if (detectionOverlay != null) {
+                        detectionOverlay.setVisibility(View.GONE);
+                        detectionOverlay.setEditMode(false);
+                    }
+                    
+                    // 恢复按钮显示
+                    if (btnCapture != null) btnCapture.setVisibility(View.VISIBLE);
+                    if (btnViewJson != null) btnViewJson.setVisibility(View.VISIBLE);
+                    if (btnStartInventory != null) btnStartInventory.setVisibility(View.VISIBLE);
+                    if (btnConfirmSave != null) btnConfirmSave.setVisibility(View.GONE);
+                    
+                    Toast.makeText(MainActivity.this, "已取消盘点", Toast.LENGTH_SHORT).show();
+                }
+            });
+            
+        } catch (Exception e) {
+            Log.e("MainActivity", "取消盘点流程失败: " + e.getMessage(), e);
+        }
+    }
+    
     public void onPause()
     {
         super.onPause();
 
+        // 如果正在盘点，先取消盘点流程
+        if (isInventoryMode) {
+            cancelInventoryProcess();
+        }
+        
+        // 关闭相机
         yolov8ncnn.closeCamera();
+        
+        // 清理冻结帧资源
+        if (frozenFrame != null && !frozenFrame.isRecycled()) {
+            frozenFrame.recycle();
+            frozenFrame = null;
+        }
+        isCameraFrozen = false;
+        isInventoryMode = false;
     }
 }
